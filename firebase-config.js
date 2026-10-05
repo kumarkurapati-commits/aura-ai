@@ -8,10 +8,10 @@
 // are saved only in the visitor's own browser.
 
 export const firebaseConfig = {
-  apiKey: "",
-  authDomain: "",
-  projectId: "",
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: "",
+  apiKey: "AIzaSyCBPbrMpDbAkrH1wyKBR9Q1bRXCQncM_aY",
+  authDomain: "aura-ai-c090d.firebaseapp.com",
+  projectId: "aura-ai-c090d",
+  storageBucket: "aura-ai-c090d.firebasestorage.app",
+  messagingSenderId: "986179003893",
+  appId: "1:986179003893:web:7306f496be9eeb2f9fecbc",
 };
