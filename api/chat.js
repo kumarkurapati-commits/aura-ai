@@ -5,7 +5,9 @@
 
 export const config = { runtime: 'edge' };
 
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// Models to try, in order. "-latest" aliases follow Google's newest stable models automatically.
+const MODELS = [process.env.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-flash-lite-latest']
+  .filter((m, i, a) => m && a.indexOf(m) === i);
 const SYSTEM_PROMPT =
   process.env.SYSTEM_PROMPT || 'You are AURA AI, a helpful, friendly and concise assistant.';
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || '';
@@ -102,8 +104,49 @@ function json(status, body) {
   });
 }
 
+function callGemini(model, payload, key, stream) {
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}` +
+    (stream ? ':streamGenerateContent?alt=sse' : ':generateContent');
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+    body: payload,
+  }).catch(() => null);
+}
+
+// GET /api/chat  ->  quick health check you can open in a browser.
+async function healthCheck(req) {
+  const ip = (req.headers.get('x-forwarded-for') || 'unknown').split(',')[0].trim();
+  if (isLimited('health:' + ip)) return json(429, { error: 'rate_limited' });
+  const key = process.env.GEMINI_API_KEY;
+  const out = {
+    geminiKeySet: !!key,
+    firebaseProjectId: FIREBASE_PROJECT_ID || '(not set: sign-in not enforced)',
+    models: [],
+  };
+  if (key) {
+    const payload = JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: 'Reply with the single word: ok' }] }],
+      generationConfig: { maxOutputTokens: 5 },
+    });
+    for (const model of MODELS) {
+      const r = await callGemini(model, payload, key, false);
+      let detail = '';
+      if (r && !r.ok) {
+        try { detail = ((await r.json()).error || {}).message || ''; } catch { /* ignore */ }
+      }
+      out.models.push({ model, status: r ? r.status : 'unreachable', works: !!(r && r.ok), detail: detail.slice(0, 200) });
+      if (r && r.ok) break;
+    }
+  }
+  out.cloudWorking = out.models.some((m) => m.works);
+  return json(200, out);
+}
+
 // ---------- Handler ----------
 export default async function handler(req) {
+  if (req.method === 'GET') return healthCheck(req);
   if (req.method !== 'POST') return json(405, { error: 'method_not_allowed' });
 
   // Who is calling?
@@ -151,26 +194,26 @@ export default async function handler(req) {
       body.instructions.slice(0, MAX_INSTRUCTION_CHARS);
   }
 
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}` +
-    `:streamGenerateContent?alt=sse`;
+  const payload = JSON.stringify({
+    contents,
+    systemInstruction: { parts: [{ text: system }] },
+    generationConfig: { maxOutputTokens: 2048, temperature: 0.7 },
+  });
 
-  const upstream = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-    body: JSON.stringify({
-      contents,
-      systemInstruction: { parts: [{ text: system }] },
-      generationConfig: { maxOutputTokens: 2048, temperature: 0.7 },
-    }),
-  }).catch(() => null);
-
-  if (!upstream) return json(502, { error: 'upstream_unreachable', fallback: true });
-  if (!upstream.ok) {
-    const quota = upstream.status === 429;
+  // Try each model until one answers (a model can be retired or have its own quota).
+  let upstream = null;
+  let lastStatus = 0;
+  for (const model of MODELS) {
+    upstream = await callGemini(model, payload, key, true);
+    if (upstream && upstream.ok) break;
+    lastStatus = upstream ? upstream.status : 0;
+    upstream = null;
+  }
+  if (!upstream) {
+    const quota = lastStatus === 429;
     return json(quota ? 429 : 502, {
       error: quota ? 'quota_exceeded' : 'upstream_error',
-      status: upstream.status,
+      status: lastStatus,
       fallback: true,
     });
   }
