@@ -2,269 +2,203 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>AURA AI</title>
-<style>
-  :root {
-    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
-    --line: #e4e4df; --accent: #2f6f5e; --accent-text: #ffffff;
-    --user: #e8f0ec; --warn-bg: #fff6e0; --warn: #7a5a00;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #141413; --panel: #1d1d1b; --text: #ecece8; --muted: #9a9a94;
-      --line: #2e2e2b; --accent: #5fb39b; --accent-text: #0e1a16;
-      --user: #22332d; --warn-bg: #2e2714; --warn: #e6c46a;
-    }
-  }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
-  body {
-    background: var(--bg); color: var(--text);
-    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    display: flex; flex-direction: column;
-  }
-  header {
-    display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
-  }
-  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
-  .right { display: flex; align-items: center; gap: 8px; }
-  #mode {
-    font-size: 12px; padding: 3px 10px; border-radius: 999px;
-    border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
-  }
-  #mode.cloud::before { content: "● "; color: var(--accent); }
-  #mode.local::before { content: "● "; color: #c9952b; }
-  button.ghost {
-    background: none; border: 1px solid var(--line); color: var(--muted);
-    border-radius: 8px; padding: 5px 10px; font-size: 13px; cursor: pointer;
-  }
-  main { flex: 1; overflow-y: auto; }
-  #log { max-width: 760px; margin: 0 auto; padding: 20px 16px 8px; }
-  .msg { margin: 0 0 14px; display: flex; }
-  .msg .bubble {
-    padding: 10px 14px; border-radius: 14px; max-width: 100%;
-    white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
-  }
-  .msg.user { justify-content: flex-end; }
-  .msg.user .bubble { background: var(--user); border-bottom-right-radius: 4px; max-width: 85%; }
-  .msg.assistant .bubble { background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
-  .msg.assistant .bubble:empty::after { content: "…"; color: var(--muted); }
-  .notice {
-    margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; font-size: 14px;
-    background: var(--warn-bg); color: var(--warn);
-  }
-  .empty { text-align: center; color: var(--muted); margin-top: 18vh; padding: 0 16px; }
-  .empty h2 { color: var(--text); font-weight: 600; margin: 0 0 6px; }
-  #progress { height: 3px; background: var(--accent); width: 0; transition: width .3s; }
-  footer { background: var(--bg); padding: 8px 16px 16px; }
-  form {
-    max-width: 760px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 8px;
-  }
-  textarea {
-    flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--text);
-    font: inherit; max-height: 180px; padding: 6px 8px;
-  }
-  #send {
-    background: var(--accent); color: var(--accent-text); border: 0; border-radius: 10px;
-    padding: 9px 16px; font-weight: 600; cursor: pointer;
-  }
-  #send:disabled { opacity: .5; cursor: default; }
-  .fine { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--muted); text-align: center; }
-</style>
+<meta name="description" content="AURA AI — a free AI assistant for everyone. Chat, organise your work in projects, and pick up where you left off on any device." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2314b8a6'/%3E%3Cstop offset='.55' stop-color='%237c5cff'/%3E%3Cstop offset='1' stop-color='%23f472b6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='32' cy='32' r='28' fill='url(%23g)'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 </head>
 <body>
-<header>
-  <h1>AURA AI</h1>
-  <div class="right">
-    <span id="mode" class="cloud">Cloud</span>
-    <button class="ghost" id="newChat" type="button">New chat</button>
-  </div>
-</header>
-<div id="progress"></div>
-<main id="scroller">
-  <div id="log">
-    <div class="empty" id="empty">
-      <h2>How can I help?</h2>
-      <div>Free to use. If the cloud model is busy, a smaller model runs on your own device.</div>
+
+<!-- ============ LOADING ============ -->
+<section id="view-loading" class="view center">
+  <div class="orb orb-pulse"></div>
+</section>
+
+<!-- ============ HOME ============ -->
+<section id="view-home" class="view" hidden>
+  <div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+  <nav class="home-nav">
+    <a class="brand" href="#"><span class="orb sm"></span>AURA AI</a>
+    <div class="home-nav-actions">
+      <a class="btn ghost" href="#signin">Log in</a>
+      <a class="btn primary" href="#signup">Sign up free</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <p class="eyebrow">Free for everyone</p>
+    <h1>Think out loud<br />with <span class="grad">AURA AI</span>.</h1>
+    <p class="lede">Ask anything, draft and brainstorm, and keep your work organised in projects. No subscription and no credit card.</p>
+    <div class="hero-cta">
+      <a class="btn primary lg" href="#signup">Start chatting, it's free</a>
+      <a class="btn ghost lg" href="#signin">I have an account</a>
+    </div>
+
+    <div class="hero-demo" aria-hidden="true">
+      <div class="demo-side">
+        <div class="demo-pill">＋ New chat</div>
+        <div class="demo-label">Projects</div>
+        <div class="demo-item">📁 Trip to Japan</div>
+        <div class="demo-item">📁 Science fair</div>
+        <div class="demo-label">Today</div>
+        <div class="demo-item active">Explain black holes simply</div>
+        <div class="demo-item">Weekly meal plan</div>
+      </div>
+      <div class="demo-main">
+        <div class="demo-msg user">Explain black holes like I'm 10.</div>
+        <div class="demo-msg bot">Imagine squeezing a whole mountain into a marble. Its gravity becomes so strong that nothing, not even light, can climb back out. That's a black hole. 🌌</div>
+        <div class="demo-input">Message AURA…<span>↑</span></div>
+      </div>
+    </div>
+  </header>
+
+  <section class="features" id="features">
+    <article class="feature">
+      <div class="f-icon">✦</div>
+      <h3>Free, for real</h3>
+      <p>AURA runs on free cloud capacity. If it ever gets busy, a smaller model takes over right on your device, so you're never locked out.</p>
+    </article>
+    <article class="feature">
+      <div class="f-icon">▣</div>
+      <h3>Projects keep you organised</h3>
+      <p>Group related chats into projects and give each one its own instructions, like "answer as a maths tutor".</p>
+    </article>
+    <article class="feature">
+      <div class="f-icon">◎</div>
+      <h3>Your chats, everywhere</h3>
+      <p>Sign in once and your conversation history follows you to any phone, tablet or laptop. Rename and sort chats however you like.</p>
+    </article>
+  </section>
+
+  <section class="cta-band">
+    <h2>Ready when you are.</h2>
+    <a class="btn primary lg" href="#signup">Create your free account</a>
+  </section>
+
+  <footer class="home-foot">
+    <span>© <span id="year"></span> AURA AI</span>
+    <span>AI can make mistakes, so check important information. Cloud answers are generated by Google Gemini.</span>
+  </footer>
+</section>
+
+<!-- ============ AUTH ============ -->
+<section id="view-auth" class="view center" hidden>
+  <div class="aurora soft" aria-hidden="true"><span></span><span></span><span></span></div>
+  <a class="brand auth-brand" href="#"><span class="orb sm"></span>AURA AI</a>
+  <div class="auth-card">
+    <h2 id="auth-title">Welcome back</h2>
+    <p class="muted" id="auth-sub">Log in to continue to AURA AI.</p>
+
+    <div class="demo-banner" id="auth-demo" hidden>
+      Demo mode: sign-in isn't connected yet, so your chats are saved only in this browser.
+    </div>
+
+    <button class="btn google" id="btn-google" type="button">
+      <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
+      Continue with Google
+    </button>
+
+    <div class="divider"><span>or</span></div>
+
+    <form id="auth-form" novalidate>
+      <label class="field" id="field-name" hidden>
+        <span>Your name</span>
+        <input id="in-name" type="text" autocomplete="name" maxlength="60" />
+      </label>
+      <label class="field">
+        <span>Email</span>
+        <input id="in-email" type="email" autocomplete="email" required />
+      </label>
+      <label class="field" id="field-pass">
+        <span>Password</span>
+        <input id="in-pass" type="password" autocomplete="current-password" minlength="6" required />
+      </label>
+      <div class="auth-error" id="auth-error" role="alert" hidden></div>
+      <div class="auth-ok" id="auth-ok" role="status" hidden></div>
+      <button class="btn primary block" id="auth-submit" type="submit">Log in</button>
+    </form>
+
+    <div class="auth-links">
+      <button class="link" id="btn-forgot" type="button">Forgot password?</button>
+      <span id="auth-switch-wrap"><span id="auth-switch-text">New to AURA?</span> <a class="link" id="auth-switch" href="#signup">Create an account</a></span>
     </div>
   </div>
-</main>
-<footer>
-  <form id="form">
-    <textarea id="input" rows="1" placeholder="Message…" autocomplete="off"></textarea>
-    <button id="send" type="submit">Send</button>
-  </form>
-  <div class="fine">AI can make mistakes. Don't share sensitive personal information.</div>
-</footer>
+</section>
 
-<script type="module">
-  // ---- Settings -------------------------------------------------------------
-  // Small, fast on-device model used when the cloud quota runs out.
-  // Other options: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC" (better, ~1 GB), "Llama-3.2-3B-Instruct-q4f16_1-MLC" (best, ~2 GB)
-  const LOCAL_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
-  const SYSTEM_PROMPT = "You are AURA AI, a helpful, friendly and concise assistant.";
-  const CLOUD_RETRY_MS = 5 * 60 * 1000; // try the cloud again after 5 minutes
+<!-- ============ APP ============ -->
+<section id="view-app" class="view" hidden>
+  <aside id="sidebar">
+    <div class="side-top">
+      <a class="brand" href="#" id="side-brand"><span class="orb sm"></span>AURA AI</a>
+      <button class="icon-btn" id="btn-collapse" title="Close sidebar" aria-label="Close sidebar">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
+      </button>
+    </div>
 
-  // ---- State ----------------------------------------------------------------
-  const $ = (id) => document.getElementById(id);
-  const log = $("log"), input = $("input"), send = $("send"), form = $("form");
-  const modeEl = $("mode"), progress = $("progress"), scroller = $("scroller");
-  let messages = [];          // in-memory history: [{role, content}]
-  let localUntil = 0;         // timestamp until which we stay on the local model
-  let engine = null, enginePromise = null;
-  let busy = false;
+    <button class="new-chat" id="btn-new-chat" type="button">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+      New chat
+    </button>
 
-  // ---- UI helpers -------------------------------------------------------------
-  function setMode(m) {
-    modeEl.className = m;
-    modeEl.textContent = m === "cloud" ? "Cloud" : "On-device";
-  }
-  function add(role, text = "") {
-    $("empty")?.remove();
-    const row = document.createElement("div");
-    row.className = "msg " + role;
-    const b = document.createElement("div");
-    b.className = "bubble";
-    b.textContent = text;
-    row.appendChild(b);
-    log.appendChild(row);
-    scrollDown();
-    return b;
-  }
-  function notice(text) {
-    $("empty")?.remove();
-    const n = document.createElement("div");
-    n.className = "notice";
-    n.textContent = text;
-    log.appendChild(n);
-    scrollDown();
-    return n;
-  }
-  function scrollDown() { scroller.scrollTop = scroller.scrollHeight; }
-  function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 180) + "px"; }
+    <div class="side-search">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="in-search" type="search" placeholder="Search chats" autocomplete="off" />
+    </div>
 
-  // ---- Cloud (Vercel function -> Gemini) --------------------------------------
-  async function askCloud(history, bubble) {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ messages: history }),
-    });
-    const isJson = (res.headers.get("content-type") || "").includes("application/json");
-    if (!res.ok || isJson) {
-      const info = isJson ? await res.json().catch(() => ({})) : {};
-      const err = new Error(info.error || "cloud_failed");
-      err.fallback = info.fallback !== false; // fall back unless server says otherwise
-      throw err;
-    }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let out = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      out += dec.decode(value, { stream: true });
-      bubble.textContent = out;
-      scrollDown();
-    }
-    if (!out.trim()) { const e = new Error("empty"); e.fallback = true; throw e; }
-    return out;
-  }
+    <nav class="side-scroll" id="side-scroll">
+      <div class="side-section">
+        <div class="side-head">
+          <span>Projects</span>
+          <button class="icon-btn sm" id="btn-new-project" title="New project" aria-label="New project">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+        <div id="project-list"></div>
+      </div>
+      <div id="chat-groups"></div>
+    </nav>
 
-  // ---- On-device (WebLLM in the browser) ---------------------------------------
-  async function getEngine() {
-    if (engine) return engine;
-    if (enginePromise) return enginePromise;
-    if (!("gpu" in navigator)) {
-      throw new Error("This browser can't run the on-device model (needs WebGPU — try recent Chrome or Edge).");
-    }
-    const n = notice("Cloud is busy. Downloading the on-device model (one-time, about 0.9 GB)…");
-    enginePromise = (async () => {
-      const webllm = await import("https://esm.run/@mlc-ai/web-llm");
-      const e = await webllm.CreateMLCEngine(LOCAL_MODEL, {
-        initProgressCallback: (p) => {
-          progress.style.width = Math.round((p.progress || 0) * 100) + "%";
-          n.textContent = "Preparing on-device model: " + (p.text || "");
-        },
-      });
-      progress.style.width = "0";
-      n.textContent = "On-device model ready. Your messages now stay on this device.";
-      engine = e;
-      return e;
-    })();
-    try { return await enginePromise; }
-    catch (err) { enginePromise = null; progress.style.width = "0"; n.remove(); throw err; }
-  }
+    <div class="side-user" id="side-user"></div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
 
-  async function askLocal(history, bubble) {
-    const e = await getEngine();
-    const stream = await e.chat.completions.create({
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history.slice(-12)],
-      stream: true,
-      max_tokens: 768,
-      temperature: 0.7,
-    });
-    let out = "";
-    for await (const chunk of stream) {
-      out += chunk.choices?.[0]?.delta?.content || "";
-      bubble.textContent = out;
-      scrollDown();
-    }
-    return out;
-  }
+  <main id="main">
+    <div class="topbar">
+      <button class="icon-btn" id="btn-open-side" title="Open sidebar" aria-label="Open sidebar">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
+      </button>
+      <div class="crumbs" id="crumbs"></div>
+      <span class="mode" id="mode" title="Where answers are coming from">Cloud</span>
+    </div>
 
-  // ---- Main flow ---------------------------------------------------------------
-  async function submit(text) {
-    if (busy || !text.trim()) return;
-    busy = true; send.disabled = true;
-    messages.push({ role: "user", content: text });
-    add("user", text);
-    const bubble = add("assistant");
-    let reply = "";
-    try {
-      if (Date.now() >= localUntil) {
-        try {
-          setMode("cloud");
-          reply = await askCloud(messages, bubble);
-        } catch (err) {
-          if (!err.fallback) throw err;
-          localUntil = Date.now() + CLOUD_RETRY_MS;
-          bubble.textContent = "";
-        }
-      }
-      if (!reply) {
-        setMode("local");
-        reply = await askLocal(messages, bubble);
-      }
-      messages.push({ role: "assistant", content: reply });
-    } catch (err) {
-      bubble.textContent = "Sorry — " + (err.message || "something went wrong") + ". Please try again.";
-      messages.pop(); // drop the unanswered user message from history
-    } finally {
-      busy = false; send.disabled = false; input.focus();
-    }
-  }
+    <div class="chat-scroll" id="chat-scroll">
+      <div class="chat-log" id="chat-log"></div>
+    </div>
 
-  form.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const t = input.value;
-    input.value = ""; autosize();
-    submit(t);
-  });
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
-  });
-  input.addEventListener("input", autosize);
-  $("newChat").addEventListener("click", () => {
-    if (busy) return;
-    messages = [];
-    log.innerHTML = '<div class="empty" id="empty"><h2>How can I help?</h2><div>New conversation started.</div></div>';
-    engine?.resetChat?.();
-  });
-  input.focus();
-</script>
+    <div class="composer-wrap">
+      <div id="progress"><div id="progress-bar"></div></div>
+      <form class="composer" id="composer">
+        <textarea id="in-msg" rows="1" placeholder="Message AURA…" autocomplete="off"></textarea>
+        <button class="send" id="btn-send" type="submit" aria-label="Send">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        </button>
+      </form>
+      <p class="fine">AURA can make mistakes. Check important info.</p>
+    </div>
+  </main>
+</section>
+
+<!-- Overlays -->
+<div id="menu" class="menu" hidden role="menu"></div>
+<div id="modal-root" class="modal-root" hidden></div>
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="app.js"></script>
 </body>
 </html>

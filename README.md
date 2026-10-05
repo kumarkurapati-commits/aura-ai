@@ -1,45 +1,32 @@
-# AURA AI — free hybrid chatbot
+# AURA AI — v2
 
-A public ChatGPT-style chatbot that costs nothing to run.
+Free, public, ChatGPT-style assistant: home page → sign in → chat, with a sidebar of chats, rename, search, and projects.
 
-- **Cloud mode:** answers come from Google Gemini's free tier through a Vercel function (your API key stays on the server).
-- **On-device mode:** when the free quota or rate limit is hit, the page automatically switches to a small open model (Llama 3.2 1B) that runs inside the visitor's own browser via WebLLM. It retries the cloud after 5 minutes.
+| File | What it is |
+|---|---|
+| `index.html` | Home page, sign-in page and chat app (one page) |
+| `style.css` | All styling (light + dark mode, mobile) |
+| `app.js` | App logic: sign-in, chats, projects, sidebar, cloud + on-device AI |
+| `firebase-config.js` | **You paste your Firebase config here** |
+| `firestore.rules` | Security rules to paste into Firebase (each user sees only their own chats) |
+| `api/chat.js` | Vercel server function: checks sign-in, calls Gemini |
 
-```
-index.html      the chat page (no build step)
-api/chat.js     Vercel Edge Function: rate limit + Gemini streaming proxy
-```
+Everything runs on free tiers: Vercel (hosting), Firebase Spark (sign-in + database), Gemini (AI).
 
-## Deploy in about 15 minutes
+## Demo mode
+While `firebase-config.js` is empty, the app runs in demo mode: sign-in just asks for an email and chats are saved only in that browser. Useful for checking the site before Firebase is set up.
 
-1. **Get a free Gemini API key** at https://aistudio.google.com/apikey (sign in with Google → "Create API key").
-2. **Put the code on GitHub:** create a new repository and upload `index.html` and the `api` folder (keep the folder structure).
-3. **Deploy on Vercel:** sign up free at https://vercel.com with GitHub → "Add New… → Project" → import the repository → leave all settings as default.
-4. **Add the key:** in the Vercel project go to Settings → Environment Variables → add `GEMINI_API_KEY` = your key → then Deployments → "Redeploy".
-5. Open `https://<your-project>.vercel.app` and share the link.
+## Setup
+1. **Firebase project** — console.firebase.google.com → Create project → add a Web app (`</>`) → copy the config.
+2. **Authentication** → Get started → Sign-in method → enable **Google** and **Email/Password**. Then Settings → Authorized domains → add your `*.vercel.app` domain.
+3. **Firestore Database** → Create database → production mode → Rules tab → paste `firestore.rules` → Publish.
+4. **Vercel** → Settings → Environments → add `FIREBASE_PROJECT_ID` = your Firebase project ID (keep `GEMINI_API_KEY`).
+5. **GitHub** → upload the files, edit `firebase-config.js` with your config, replace `api/chat.js`. Vercel redeploys automatically.
 
-### Optional settings (Vercel environment variables)
+## Free-tier limits (approximate, check current pricing pages)
+- Firestore Spark: ~20,000 writes/day → roughly 10,000 messages a day across all users.
+- Gemini free tier: per-minute and per-day request caps; beyond that AURA switches to on-device mode.
+- Each chat is stored as one document (max ~1 MB, roughly a few hundred long messages).
 
-| Variable | Default | What it does |
-|---|---|---|
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Which Gemini model to call. Check Google AI Studio for the current free-tier models. |
-| `SYSTEM_PROMPT` | helpful, concise assistant | The bot's personality and instructions. |
-| `RATE_LIMIT` | `20` | Max requests per visitor IP per 10 minutes. |
-
-To change the on-device model, edit `LOCAL_MODEL` near the top of the script in `index.html`.
-
-## Test locally
-
-```
-npm i -g vercel
-vercel dev
-```
-Create a `.env.local` file containing `GEMINI_API_KEY=your-key` first. If you open `index.html` without the function running, the page goes straight to on-device mode — a handy way to test the fallback.
-
-## Limits to know
-
-- **Free-tier quota:** Gemini's free tier has per-minute and per-day request limits (they change; see AI Studio). Beyond that, visitors are moved to on-device mode.
-- **Data:** on Google's free tier, prompts may be used to improve Google's products. State this in your site's privacy notice, or move to the paid tier if that matters.
-- **On-device mode** needs a WebGPU browser (recent Chrome/Edge on desktop and Android; Safari support is newer) and a one-time ~0.9 GB download. Answers are weaker than Gemini's.
-- **Rate limiter** is best-effort per server instance. If you get abused, add Cloudflare Turnstile (free CAPTCHA) or Vercel's firewall rules.
-- **Chat history** lives only in the open tab; refreshing clears it. Nothing is stored on your server.
+## Optional Vercel variables
+`GEMINI_MODEL` (default `gemini-2.5-flash`), `SYSTEM_PROMPT`, `RATE_LIMIT` (default 30 requests per user per 10 min).
