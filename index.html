@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AURA AI</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --line: #e4e4df; --accent: #2f6f5e; --accent-text: #ffffff;
+    --user: #e8f0ec; --warn-bg: #fff6e0; --warn: #7a5a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --panel: #1d1d1b; --text: #ecece8; --muted: #9a9a94;
+      --line: #2e2e2b; --accent: #5fb39b; --accent-text: #0e1a16;
+      --user: #22332d; --warn-bg: #2e2714; --warn: #e6c46a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  .right { display: flex; align-items: center; gap: 8px; }
+  #mode {
+    font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+  }
+  #mode.cloud::before { content: "● "; color: var(--accent); }
+  #mode.local::before { content: "● "; color: #c9952b; }
+  button.ghost {
+    background: none; border: 1px solid var(--line); color: var(--muted);
+    border-radius: 8px; padding: 5px 10px; font-size: 13px; cursor: pointer;
+  }
+  main { flex: 1; overflow-y: auto; }
+  #log { max-width: 760px; margin: 0 auto; padding: 20px 16px 8px; }
+  .msg { margin: 0 0 14px; display: flex; }
+  .msg .bubble {
+    padding: 10px 14px; border-radius: 14px; max-width: 100%;
+    white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
+  }
+  .msg.user { justify-content: flex-end; }
+  .msg.user .bubble { background: var(--user); border-bottom-right-radius: 4px; max-width: 85%; }
+  .msg.assistant .bubble { background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .msg.assistant .bubble:empty::after { content: "…"; color: var(--muted); }
+  .notice {
+    margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; font-size: 14px;
+    background: var(--warn-bg); color: var(--warn);
+  }
+  .empty { text-align: center; color: var(--muted); margin-top: 18vh; padding: 0 16px; }
+  .empty h2 { color: var(--text); font-weight: 600; margin: 0 0 6px; }
+  #progress { height: 3px; background: var(--accent); width: 0; transition: width .3s; }
+  footer { background: var(--bg); padding: 8px 16px 16px; }
+  form {
+    max-width: 760px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 8px;
+  }
+  textarea {
+    flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--text);
+    font: inherit; max-height: 180px; padding: 6px 8px;
+  }
+  #send {
+    background: var(--accent); color: var(--accent-text); border: 0; border-radius: 10px;
+    padding: 9px 16px; font-weight: 600; cursor: pointer;
+  }
+  #send:disabled { opacity: .5; cursor: default; }
+  .fine { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AURA AI</h1>
+  <div class="right">
+    <span id="mode" class="cloud">Cloud</span>
+    <button class="ghost" id="newChat" type="button">New chat</button>
+  </div>
+</header>
+<div id="progress"></div>
+<main id="scroller">
+  <div id="log">
+    <div class="empty" id="empty">
+      <h2>How can I help?</h2>
+      <div>Free to use. If the cloud model is busy, a smaller model runs on your own device.</div>
+    </div>
+  </div>
+</main>
+<footer>
+  <form id="form">
+    <textarea id="input" rows="1" placeholder="Message…" autocomplete="off"></textarea>
+    <button id="send" type="submit">Send</button>
+  </form>
+  <div class="fine">AI can make mistakes. Don't share sensitive personal information.</div>
+</footer>
+
+<script type="module">
+  // ---- Settings -------------------------------------------------------------
+  // Small, fast on-device model used when the cloud quota runs out.
+  // Other options: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC" (better, ~1 GB), "Llama-3.2-3B-Instruct-q4f16_1-MLC" (best, ~2 GB)
+  const LOCAL_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
+  const SYSTEM_PROMPT = "You are AURA AI, a helpful, friendly and concise assistant.";
+  const CLOUD_RETRY_MS = 5 * 60 * 1000; // try the cloud again after 5 minutes
+
+  // ---- State ----------------------------------------------------------------
+  const $ = (id) => document.getElementById(id);
+  const log = $("log"), input = $("input"), send = $("send"), form = $("form");
+  const modeEl = $("mode"), progress = $("progress"), scroller = $("scroller");
+  let messages = [];          // in-memory history: [{role, content}]
+  let localUntil = 0;         // timestamp until which we stay on the local model
+  let engine = null, enginePromise = null;
+  let busy = false;
+
+  // ---- UI helpers -------------------------------------------------------------
+  function setMode(m) {
+    modeEl.className = m;
+    modeEl.textContent = m === "cloud" ? "Cloud" : "On-device";
+  }
+  function add(role, text = "") {
+    $("empty")?.remove();
+    const row = document.createElement("div");
+    row.className = "msg " + role;
+    const b = document.createElement("div");
+    b.className = "bubble";
+    b.textContent = text;
+    row.appendChild(b);
+    log.appendChild(row);
+    scrollDown();
+    return b;
+  }
+  function notice(text) {
+    $("empty")?.remove();
+    const n = document.createElement("div");
+    n.className = "notice";
+    n.textContent = text;
+    log.appendChild(n);
+    scrollDown();
+    return n;
+  }
+  function scrollDown() { scroller.scrollTop = scroller.scrollHeight; }
+  function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 180) + "px"; }
+
+  // ---- Cloud (Vercel function -> Gemini) --------------------------------------
+  async function askCloud(history, bubble) {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: history }),
+    });
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    if (!res.ok || isJson) {
+      const info = isJson ? await res.json().catch(() => ({})) : {};
+      const err = new Error(info.error || "cloud_failed");
+      err.fallback = info.fallback !== false; // fall back unless server says otherwise
+      throw err;
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let out = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      out += dec.decode(value, { stream: true });
+      bubble.textContent = out;
+      scrollDown();
+    }
+    if (!out.trim()) { const e = new Error("empty"); e.fallback = true; throw e; }
+    return out;
+  }
+
+  // ---- On-device (WebLLM in the browser) ---------------------------------------
+  async function getEngine() {
+    if (engine) return engine;
+    if (enginePromise) return enginePromise;
+    if (!("gpu" in navigator)) {
+      throw new Error("This browser can't run the on-device model (needs WebGPU — try recent Chrome or Edge).");
+    }
+    const n = notice("Cloud is busy. Downloading the on-device model (one-time, about 0.9 GB)…");
+    enginePromise = (async () => {
+      const webllm = await import("https://esm.run/@mlc-ai/web-llm");
+      const e = await webllm.CreateMLCEngine(LOCAL_MODEL, {
+        initProgressCallback: (p) => {
+          progress.style.width = Math.round((p.progress || 0) * 100) + "%";
+          n.textContent = "Preparing on-device model: " + (p.text || "");
+        },
+      });
+      progress.style.width = "0";
+      n.textContent = "On-device model ready. Your messages now stay on this device.";
+      engine = e;
+      return e;
+    })();
+    try { return await enginePromise; }
+    catch (err) { enginePromise = null; progress.style.width = "0"; n.remove(); throw err; }
+  }
+
+  async function askLocal(history, bubble) {
+    const e = await getEngine();
+    const stream = await e.chat.completions.create({
+      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history.slice(-12)],
+      stream: true,
+      max_tokens: 768,
+      temperature: 0.7,
+    });
+    let out = "";
+    for await (const chunk of stream) {
+      out += chunk.choices?.[0]?.delta?.content || "";
+      bubble.textContent = out;
+      scrollDown();
+    }
+    return out;
+  }
+
+  // ---- Main flow ---------------------------------------------------------------
+  async function submit(text) {
+    if (busy || !text.trim()) return;
+    busy = true; send.disabled = true;
+    messages.push({ role: "user", content: text });
+    add("user", text);
+    const bubble = add("assistant");
+    let reply = "";
+    try {
+      if (Date.now() >= localUntil) {
+        try {
+          setMode("cloud");
+          reply = await askCloud(messages, bubble);
+        } catch (err) {
+          if (!err.fallback) throw err;
+          localUntil = Date.now() + CLOUD_RETRY_MS;
+          bubble.textContent = "";
+        }
+      }
+      if (!reply) {
+        setMode("local");
+        reply = await askLocal(messages, bubble);
+      }
+      messages.push({ role: "assistant", content: reply });
+    } catch (err) {
+      bubble.textContent = "Sorry — " + (err.message || "something went wrong") + ". Please try again.";
+      messages.pop(); // drop the unanswered user message from history
+    } finally {
+      busy = false; send.disabled = false; input.focus();
+    }
+  }
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const t = input.value;
+    input.value = ""; autosize();
+    submit(t);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+  });
+  input.addEventListener("input", autosize);
+  $("newChat").addEventListener("click", () => {
+    if (busy) return;
+    messages = [];
+    log.innerHTML = '<div class="empty" id="empty"><h2>How can I help?</h2><div>New conversation started.</div></div>';
+    engine?.resetChat?.();
+  });
+  input.focus();
+</script>
+</body>
+</html>
