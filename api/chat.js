@@ -19,7 +19,7 @@ const MODEL_CHAINS = {
   smart: uniq([process.env.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3.5-flash-lite']),
   fast: uniq([process.env.GEMINI_FAST_MODEL, 'gemini-flash-lite-latest', 'gemini-3.5-flash-lite', 'gemini-flash-latest']),
 };
-const TIME_BUDGET_MS = 20000; // stop trying more models after this (Vercel needs a response within ~25 s)
+const TIME_BUDGET_MS = 75000; // stop trying more models after this long
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const isBusy = (status) => status === 503 || status === 500 || status === 504;
 
@@ -118,7 +118,7 @@ function json(status, body) {
   });
 }
 
-function callGemini(model, body, key, stream) {
+function callGemini(model, body, key, stream, timeoutMs = 30000) {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/${model}` +
     (stream ? ':streamGenerateContent?alt=sse' : ':generateContent');
@@ -126,6 +126,7 @@ function callGemini(model, body, key, stream) {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   }).catch(() => null);
 }
 
@@ -169,18 +170,22 @@ async function healthCheck(req) {
   const probe = async (model, withImage) => {
     const parts = [{ text: withImage ? 'What colour is this image? One word.' : 'Reply with the single word: ok' }];
     if (withImage) parts.unshift({ inlineData: { mimeType: 'image/jpeg', data: TEST_JPEG } });
-    const r = await callGemini(model, { contents: [{ role: 'user', parts }], generationConfig: { maxOutputTokens: 10 } }, key, false);
+    const t0 = Date.now();
+    const r = await callGemini(model, { contents: [{ role: 'user', parts }], generationConfig: { maxOutputTokens: 10 } }, key, false, 20000);
     let detail = '';
     if (r && !r.ok) { try { detail = ((await r.json()).error || {}).message || ''; } catch { /* ignore */ } }
-    return { model, test: withImage ? 'image' : 'text', status: r ? r.status : 'unreachable', works: !!(r && r.ok), detail: detail.slice(0, 200) };
+    return { model, test: withImage ? 'image' : 'text', status: r ? r.status : 'timeout', works: !!(r && r.ok), seconds: Math.round((Date.now() - t0) / 100) / 10, detail: detail.slice(0, 200) };
   };
   if (key) {
     const models = full ? uniq([...MODEL_CHAINS.smart, ...MODEL_CHAINS.fast]) : MODEL_CHAINS.smart;
-    for (const model of models) {
-      const res = await probe(model, false);
-      out.models.push(res);
-      if (full) out.models.push(await probe(model, true));
-      else if (res.works) break;
+    if (full) {
+      out.models = await Promise.all(models.flatMap((m) => [probe(m, false), probe(m, true)]));
+    } else {
+      for (const model of models) {
+        const res = await probe(model, false);
+        out.models.push(res);
+        if (res.works) break;
+      }
     }
   }
   out.cloudWorking = out.models.some((m) => m.works && m.test === 'text');
@@ -199,7 +204,7 @@ async function makeTitle(contents, key) {
     generationConfig: { maxOutputTokens: 24, temperature: 0.3 },
   };
   for (const model of MODEL_CHAINS.fast) {
-    const r = await callGemini(model, body, key, false);
+    const r = await callGemini(model, body, key, false, 12000);
     if (r && r.ok) {
       const d = await r.json().catch(() => ({}));
       const t = (d.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
@@ -268,91 +273,98 @@ export default async function handler(req) {
     generationConfig: { maxOutputTokens: 4096, temperature: 0.7 },
   };
 
-  // Try each model (with search first if asked) until one answers.
-  let upstream = null, usedModel = '', searchUsed = false, lastStatus = 0;
-  const started = Date.now();
-  const attempts = [];
-  outer: for (const model of chain) {
-    const searchModes = wantSearch ? [true, false] : [false];
-    for (const withSearch of searchModes) {
-      if (Date.now() - started > TIME_BUDGET_MS) break outer;
-      const reqBody = withSearch ? { ...base, tools: [{ googleSearch: {} }] } : base;
-      let r = await callGemini(model, reqBody, key, true);
-      if (r && !r.ok && isBusy(r.status) && Date.now() - started < TIME_BUDGET_MS - 2000) {
-        await sleep(900); // Google is briefly overloaded: one quick retry before moving on
-        r = await callGemini(model, reqBody, key, true);
-      }
-      if (r && r.ok) { upstream = r; usedModel = model; searchUsed = withSearch; break outer; }
-      lastStatus = r ? r.status : 0;
-      let why = '';
-      if (r && lastStatus !== 400) { try { why = ((await r.clone().json()).error || {}).message || ''; } catch { /* ignore */ } }
-      attempts.push({ model, search: withSearch, status: lastStatus, detail: why.slice(0, 140) });
-      if (lastStatus === 400 && !withSearch) {
-        // A 400 without search usually means a bad file; no point trying other models.
-        let detail = '';
-        try { detail = ((await r.json()).error || {}).message || ''; } catch { /* ignore */ }
-        return json(400, { error: 'Google could not read that request' + (detail ? ': ' + detail.slice(0, 160) : ''), fallback: false });
-      }
-    }
-  }
-  if (!upstream) {
-    // Ignore "model not found" answers when choosing what to report.
-    const real = attempts.filter((a) => a.status !== 404).map((a) => a.status);
-    const quota = real.includes(429);
-    const busy = real.some(isBusy);
-    console.log('AURA: all models failed', JSON.stringify(attempts));
-    return json(quota ? 429 : 502, {
-      error: quota ? 'quota_exceeded' : busy ? 'google_busy' : 'upstream_error',
-      status: real[real.length - 1] || lastStatus,
-      attempts,
-      fallback: true,
-    });
-  }
-
-  // Convert Gemini SSE -> plain text chunks, then a final \u0000{meta} line with sources.
-  const decoder = new TextDecoder();
+  // Start replying straight away (Vercel needs a first byte within ~25 s), then try the models
+  // in the background. Heartbeat bytes (\u0001) keep the connection alive while Google thinks.
+  // The stream ends with \u0000{meta}: sources on success, or {error, fallback} if every model failed.
   const encoder = new TextEncoder();
-  const sources = new Map();
-  let buf = '';
+  const decoder = new TextDecoder();
 
-  function emit(line, ctrl) {
-    const t = line.trim();
-    if (!t.startsWith('data:')) return;
-    const payload = t.slice(5).trim();
-    if (!payload || payload === '[DONE]') return;
-    try {
-      const d = JSON.parse(payload);
-      const cand = d.candidates?.[0];
-      const text = (cand?.content?.parts || []).map((p) => (p.thought ? '' : p.text || '')).join('');
-      if (text) ctrl.enqueue(encoder.encode(text.replace(/\u0000/g, '')));
-      for (const ch of cand?.groundingMetadata?.groundingChunks || []) {
-        if (ch.web?.uri && sources.size < 8) sources.set(ch.web.uri, ch.web.title || ch.web.uri);
+  const stream = new ReadableStream({
+    async start(ctrl) {
+      let gotText = false;
+      const beat = setInterval(() => { if (!gotText) { try { ctrl.enqueue(encoder.encode('\u0001')); } catch { /* closed */ } } }, 4000);
+      ctrl.enqueue(encoder.encode('\u0001'));
+      const finish = (meta) => {
+        clearInterval(beat);
+        try { ctrl.enqueue(encoder.encode('\u0000' + JSON.stringify(meta))); ctrl.close(); } catch { /* closed */ }
+      };
+
+      let upstream = null, usedModel = '', searchUsed = false;
+      const started = Date.now();
+      const attempts = [];
+      outer: for (const model of chain) {
+        const searchModes = wantSearch ? [true, false] : [false];
+        for (const withSearch of searchModes) {
+          if (Date.now() - started > TIME_BUDGET_MS) break outer;
+          const reqBody = withSearch ? { ...base, tools: [{ googleSearch: {} }] } : base;
+          let r = await callGemini(model, reqBody, key, true, 45000);
+          if (r && !r.ok && isBusy(r.status) && Date.now() - started < TIME_BUDGET_MS - 5000) {
+            await sleep(1200); // Google is briefly overloaded: one quick retry before moving on
+            r = await callGemini(model, reqBody, key, true, 45000);
+          }
+          if (r && r.ok) { upstream = r; usedModel = model; searchUsed = withSearch; break outer; }
+          const status = r ? r.status : 'timeout';
+          let detail = '';
+          if (r) { try { detail = ((await r.json()).error || {}).message || ''; } catch { /* ignore */ } }
+          attempts.push({ model, search: withSearch, status, detail: detail.slice(0, 160) });
+          if (status === 400 && !withSearch) {
+            // A 400 without search usually means a file Google can't read; other models won't help.
+            return finish({ error: 'Google could not read that request' + (detail ? ': ' + detail.slice(0, 160) : ''), fallback: false, attempts });
+          }
+        }
       }
-    } catch {
-      /* ignore partial / non-JSON lines */
-    }
-  }
 
-  const stream = upstream.body.pipeThrough(
-    new TransformStream({
-      transform(chunk, ctrl) {
-        buf += decoder.decode(chunk, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop();
-        for (const line of lines) emit(line, ctrl);
-      },
-      flush(ctrl) {
-        if (buf) emit(buf, ctrl);
-        const meta = {
-          model: usedModel,
-          searchUsed,
-          searchUnavailable: wantSearch && !searchUsed,
-          sources: [...sources].map(([uri, title]) => ({ uri, title })),
-        };
-        ctrl.enqueue(encoder.encode('\u0000' + JSON.stringify(meta)));
-      },
-    })
-  );
+      if (!upstream) {
+        const real = attempts.filter((a) => a.status !== 404).map((a) => a.status);
+        console.log('AURA: all models failed', JSON.stringify(attempts));
+        return finish({
+          error: real.includes(429) ? 'quota_exceeded' : real.some((x) => isBusy(x) || x === 'timeout') ? 'google_busy' : 'upstream_error',
+          status: real[real.length - 1] || attempts[attempts.length - 1]?.status || 0,
+          attempts,
+          fallback: true,
+        });
+      }
+
+      // Relay Gemini's SSE stream as plain text.
+      const sources = new Map();
+      let buf = '';
+      const handle = (line) => {
+        const t = line.trim();
+        if (!t.startsWith('data:')) return;
+        const payload = t.slice(5).trim();
+        if (!payload || payload === '[DONE]') return;
+        try {
+          const d = JSON.parse(payload);
+          const cand = d.candidates?.[0];
+          const text = (cand?.content?.parts || []).map((p) => (p.thought ? '' : p.text || '')).join('');
+          if (text) { gotText = true; ctrl.enqueue(encoder.encode(text.replace(/[\u0000\u0001]/g, ''))); }
+          for (const ch of cand?.groundingMetadata?.groundingChunks || []) {
+            if (ch.web?.uri && sources.size < 8) sources.set(ch.web.uri, ch.web.title || ch.web.uri);
+          }
+        } catch { /* ignore partial / non-JSON lines */ }
+      };
+      try {
+        const reader = upstream.body.getReader();
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          for (const line of lines) handle(line);
+        }
+        if (buf) handle(buf);
+      } catch (e) {
+        if (!gotText) return finish({ error: 'google_busy', status: 'stream_failed', fallback: true });
+      }
+      finish({
+        model: usedModel,
+        searchUsed,
+        searchUnavailable: wantSearch && !searchUsed,
+        sources: [...sources].map(([uri, title]) => ({ uri, title })),
+      });
+    },
+  });
 
   return new Response(stream, {
     headers: {
