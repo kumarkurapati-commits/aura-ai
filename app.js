@@ -946,7 +946,7 @@ function messageEl(m, idx, chat, opts = {}) {
   }
   if (!streaming && !m.error) {
     const meta = [];
-    if (m.via === 'local') meta.push('Answered on-device (smaller model)');
+    if (m.via === 'local') meta.push(m.note || 'Answered on-device (smaller model)');
     if (m.stopped) meta.push('Stopped');
     if (meta.length) wrap.append(h('div', { class: 'msg-meta', text: meta.join(' · ') }));
     if (!readOnly) {
@@ -1131,7 +1131,8 @@ async function askCloud(payload, onText, signal) {
     const info = isJson ? await res.json().catch(() => ({})) : {};
     const e = new Error(info.error || (res.status === 413 ? 'that file is too large' : 'cloud_failed'));
     e.fallback = info.fallback !== false && res.status !== 413;
-    e.reason = info.error === 'quota_exceeded' || info.error === 'rate_limited' ? 'the free cloud limit was reached' : 'the cloud is unavailable';
+    e.reason = info.error === 'quota_exceeded' || info.error === 'rate_limited' ? 'the free cloud limit was reached'
+      : info.error === 'google_busy' ? "Google's servers were busy" : 'the cloud was unavailable';
     throw e;
   }
   const reader = res.body.getReader();
@@ -1275,17 +1276,16 @@ async function runAssistant(c) {
       // 2) Fall back to the on-device model for this message only.
       updateStreaming('');
       setMode('local');
-      if (c.messages[c.messages.length - 1].files?.some((f) => f.kind !== 'text')) {
-        notice(`Note: ${err.reason || 'the cloud is unavailable'}, and the on-device model can't see images or PDFs.`);
-      } else {
-        notice(`Using the on-device model because ${err.reason || 'the cloud is unavailable'}. AURA will try the cloud again with your next message.`);
-      }
+      const hadFiles = c.messages[c.messages.length - 1].files?.some((f) => f.kind !== 'text');
+      const note = `Answered on-device because ${err.reason || 'the cloud was unavailable'}`
+        + (hadFiles ? ". The on-device model can't see images or PDFs" : '')
+        + '. Press Regenerate to try the cloud again.';
       const system = BASE_PROMPT
         + (S.settings.about ? '\n\nAbout the user:\n' + S.settings.about : '')
         + (instructions ? '\n\nFollow these project instructions from the user:\n' + instructions : '');
       const history = c.messages.map((m) => ({ role: m.role, content: contentForModel(m) }));
       const text = await askLocal(history, system, updateStreaming, signal);
-      reply = { role: 'assistant', content: text, via: 'local' };
+      reply = { role: 'assistant', content: text, via: 'local', note };
       if (signal.aborted) { if (text.trim()) reply.stopped = true; else reply = null; }
     }
   } catch (err) {
