@@ -14,10 +14,14 @@ const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || '';
 
 // Models to try, in order. "-latest" aliases follow Google's newest stable models automatically.
 const uniq = (a) => a.filter((m, i) => m && a.indexOf(m) === i);
+// Extra named models are a safety net in case an alias is busy (unknown names are skipped automatically).
 const MODEL_CHAINS = {
-  smart: uniq([process.env.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-flash-lite-latest']),
-  fast: uniq([process.env.GEMINI_FAST_MODEL, 'gemini-flash-lite-latest', 'gemini-flash-latest']),
+  smart: uniq([process.env.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3.5-flash-lite']),
+  fast: uniq([process.env.GEMINI_FAST_MODEL, 'gemini-flash-lite-latest', 'gemini-3.5-flash-lite', 'gemini-flash-latest']),
 };
+const TIME_BUDGET_MS = 20000; // stop trying more models after this (Vercel needs a response within ~25 s)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const isBusy = (status) => status === 503 || status === 500 || status === 504;
 
 const MAX_MSG_CHARS = 12000;          // per message (text files are inlined, so allow more)
 const MAX_INSTRUCTION_CHARS = 2000;   // project instructions / "about you"
@@ -260,11 +264,17 @@ export default async function handler(req) {
 
   // Try each model (with search first if asked) until one answers.
   let upstream = null, usedModel = '', searchUsed = false, lastStatus = 0;
+  const started = Date.now();
   outer: for (const model of chain) {
     const attempts = wantSearch ? [true, false] : [false];
     for (const withSearch of attempts) {
+      if (Date.now() - started > TIME_BUDGET_MS) break outer;
       const reqBody = withSearch ? { ...base, tools: [{ googleSearch: {} }] } : base;
-      const r = await callGemini(model, reqBody, key, true);
+      let r = await callGemini(model, reqBody, key, true);
+      if (r && !r.ok && isBusy(r.status) && Date.now() - started < TIME_BUDGET_MS - 2000) {
+        await sleep(900); // Google is briefly overloaded: one quick retry before moving on
+        r = await callGemini(model, reqBody, key, true);
+      }
       if (r && r.ok) { upstream = r; usedModel = model; searchUsed = withSearch; break outer; }
       lastStatus = r ? r.status : 0;
       if (lastStatus === 400 && !withSearch) {
@@ -278,7 +288,7 @@ export default async function handler(req) {
   if (!upstream) {
     const quota = lastStatus === 429;
     return json(quota ? 429 : 502, {
-      error: quota ? 'quota_exceeded' : 'upstream_error',
+      error: quota ? 'quota_exceeded' : isBusy(lastStatus) ? 'google_busy' : 'upstream_error',
       status: lastStatus,
       fallback: true,
     });
