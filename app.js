@@ -1133,6 +1133,8 @@ async function askCloud(payload, onText, signal) {
     e.fallback = info.fallback !== false && res.status !== 413;
     e.reason = info.error === 'quota_exceeded' || info.error === 'rate_limited' ? 'the free cloud limit was reached'
       : info.error === 'google_busy' ? "Google's servers were busy" : 'the cloud was unavailable';
+    if (info.status && info.error === 'upstream_error') e.reason += ` (Google error ${info.status})`;
+    if (info.attempts) console.warn('AURA cloud attempts:', info.attempts);
     throw e;
   }
   const reader = res.body.getReader();
