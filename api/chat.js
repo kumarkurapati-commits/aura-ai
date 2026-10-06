@@ -1,21 +1,31 @@
 // AURA AI — Vercel Edge Function
 // Proxies chat to Google Gemini (free tier) and streams plain text back.
 // - If FIREBASE_PROJECT_ID is set, only signed-in users (valid Firebase ID token) can use it.
+// - Supports images / PDFs, "smart" vs "fast" models, Google Search grounding, and chat titles.
 // - Returns {fallback:true} on quota / rate-limit / outage so the browser can switch to the on-device model.
+// - GET /api/chat is a health check you can open in a browser.
 
 export const config = { runtime: 'edge' };
 
-// Models to try, in order. "-latest" aliases follow Google's newest stable models automatically.
-const MODELS = [process.env.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-flash-lite-latest']
-  .filter((m, i, a) => m && a.indexOf(m) === i);
 const SYSTEM_PROMPT =
-  process.env.SYSTEM_PROMPT || 'You are AURA AI, a helpful, friendly and concise assistant.';
+  process.env.SYSTEM_PROMPT ||
+  'You are AURA AI, a helpful, friendly and concise assistant. Use Markdown for structure when it helps (lists, tables, code blocks).';
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || '';
-const MAX_MSG_CHARS = 4000;          // per message
-const MAX_INSTRUCTION_CHARS = 2000;  // project instructions
-const MAX_HISTORY = 20;              // messages sent upstream
-const RATE_LIMIT = Number(process.env.RATE_LIMIT || 30); // requests per user/IP per window
-const RATE_WINDOW_MS = 10 * 60 * 1000;                    // 10 minutes
+
+// Models to try, in order. "-latest" aliases follow Google's newest stable models automatically.
+const uniq = (a) => a.filter((m, i) => m && a.indexOf(m) === i);
+const MODEL_CHAINS = {
+  smart: uniq([process.env.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-flash-lite-latest']),
+  fast: uniq([process.env.GEMINI_FAST_MODEL, 'gemini-flash-lite-latest', 'gemini-flash-latest']),
+};
+
+const MAX_MSG_CHARS = 12000;          // per message (text files are inlined, so allow more)
+const MAX_INSTRUCTION_CHARS = 2000;   // project instructions / "about you"
+const MAX_HISTORY = 24;               // messages sent upstream
+const MAX_FILE_BYTES_TOTAL = 3_500_000; // base64 payload cap per request (Vercel limit is ~4 MB)
+const ALLOWED_MIME = /^(image\/(png|jpeg|webp|heic|heif|gif)|application\/pdf)$/;
+const RATE_LIMIT = Number(process.env.RATE_LIMIT || 40); // requests per user per window
+const RATE_WINDOW_MS = 10 * 60 * 1000;
 
 // ---------- Rate limiting (best-effort, per edge instance) ----------
 const hits = new Map();
@@ -104,15 +114,39 @@ function json(status, body) {
   });
 }
 
-function callGemini(model, payload, key, stream) {
+function callGemini(model, body, key, stream) {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/${model}` +
     (stream ? ':streamGenerateContent?alt=sse' : ':generateContent');
   return fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-    body: payload,
+    body: JSON.stringify(body),
   }).catch(() => null);
+}
+
+// Turn the browser's message list into Gemini "contents".
+function buildContents(msgs) {
+  let fileBytes = 0;
+  const contents = [];
+  for (const m of msgs.slice(-MAX_HISTORY)) {
+    if (!m || typeof m.content !== 'string') continue;
+    const parts = [];
+    if (Array.isArray(m.files)) {
+      for (const f of m.files.slice(0, 6)) {
+        if (!f || typeof f.data !== 'string' || !ALLOWED_MIME.test(f.mimeType || '')) continue;
+        fileBytes += f.data.length;
+        if (fileBytes > MAX_FILE_BYTES_TOTAL) continue;
+        parts.push({ inlineData: { mimeType: f.mimeType, data: f.data } });
+      }
+    }
+    const text = m.content.slice(0, MAX_MSG_CHARS);
+    if (text.trim()) parts.push({ text });
+    if (!parts.length) continue;
+    contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts });
+  }
+  while (contents.length && contents[0].role !== 'user') contents.shift();
+  return contents;
 }
 
 // GET /api/chat  ->  quick health check you can open in a browser.
@@ -126,12 +160,12 @@ async function healthCheck(req) {
     models: [],
   };
   if (key) {
-    const payload = JSON.stringify({
+    const body = {
       contents: [{ role: 'user', parts: [{ text: 'Reply with the single word: ok' }] }],
       generationConfig: { maxOutputTokens: 5 },
-    });
-    for (const model of MODELS) {
-      const r = await callGemini(model, payload, key, false);
+    };
+    for (const model of MODEL_CHAINS.smart) {
+      const r = await callGemini(model, body, key, false);
       let detail = '';
       if (r && !r.ok) {
         try { detail = ((await r.json()).error || {}).message || ''; } catch { /* ignore */ }
@@ -142,6 +176,28 @@ async function healthCheck(req) {
   }
   out.cloudWorking = out.models.some((m) => m.works);
   return json(200, out);
+}
+
+// mode: "title" -> short title for a conversation (non-streaming JSON).
+async function makeTitle(contents, key) {
+  const transcript = contents
+    .map((c) => (c.role === 'model' ? 'Assistant: ' : 'User: ') + c.parts.filter((p) => p.text).map((p) => p.text).join(' '))
+    .join('\n')
+    .slice(0, 3000);
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: 'Write a short title (3 to 6 words, no quotes, no trailing punctuation) for this conversation. Reply with the title only.\n\n' + transcript }] }],
+    generationConfig: { maxOutputTokens: 24, temperature: 0.3 },
+  };
+  for (const model of MODEL_CHAINS.fast) {
+    const r = await callGemini(model, body, key, false);
+    if (r && r.ok) {
+      const d = await r.json().catch(() => ({}));
+      const t = (d.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
+      const title = t.replace(/^["'“”‘’\s#*]+|["'“”‘’\s.*]+$/g, '').slice(0, 60);
+      if (title) return json(200, { title });
+    }
+  }
+  return json(502, { error: 'title_failed' });
 }
 
 // ---------- Handler ----------
@@ -172,42 +228,52 @@ export default async function handler(req) {
   try {
     body = await req.json();
   } catch {
-    return json(400, { error: 'bad_json', fallback: false });
+    return json(413, { error: 'Request too large or invalid. Try a smaller file.', fallback: false });
   }
 
-  const msgs = Array.isArray(body?.messages) ? body.messages.slice(-MAX_HISTORY) : [];
-  const contents = msgs
-    .filter((m) => m && typeof m.content === 'string' && m.content.trim())
-    .map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content.slice(0, MAX_MSG_CHARS) }],
-    }));
-  while (contents.length && contents[0].role !== 'user') contents.shift();
-  if (!contents.length || contents[contents.length - 1].role !== 'user') {
+  const contents = buildContents(Array.isArray(body?.messages) ? body.messages : []);
+  if (!contents.length) return json(400, { error: 'no_user_message', fallback: false });
+
+  if (body.mode === 'title') return makeTitle(contents, key);
+
+  if (contents[contents.length - 1].role !== 'user') {
     return json(400, { error: 'no_user_message', fallback: false });
   }
 
   let system = SYSTEM_PROMPT;
+  if (typeof body.about === 'string' && body.about.trim()) {
+    system += '\n\nAbout the user (they wrote this themselves; use it when relevant):\n' + body.about.slice(0, MAX_INSTRUCTION_CHARS);
+  }
   if (typeof body.instructions === 'string' && body.instructions.trim()) {
     system +=
       '\n\nThe user has set these instructions for this project. Follow them unless they conflict with being safe and honest:\n' +
       body.instructions.slice(0, MAX_INSTRUCTION_CHARS);
   }
 
-  const payload = JSON.stringify({
+  const wantSearch = body.search === true;
+  const chain = MODEL_CHAINS[body.model === 'fast' ? 'fast' : 'smart'];
+  const base = {
     contents,
     systemInstruction: { parts: [{ text: system }] },
-    generationConfig: { maxOutputTokens: 2048, temperature: 0.7 },
-  });
+    generationConfig: { maxOutputTokens: 4096, temperature: 0.7 },
+  };
 
-  // Try each model until one answers (a model can be retired or have its own quota).
-  let upstream = null;
-  let lastStatus = 0;
-  for (const model of MODELS) {
-    upstream = await callGemini(model, payload, key, true);
-    if (upstream && upstream.ok) break;
-    lastStatus = upstream ? upstream.status : 0;
-    upstream = null;
+  // Try each model (with search first if asked) until one answers.
+  let upstream = null, usedModel = '', searchUsed = false, lastStatus = 0;
+  outer: for (const model of chain) {
+    const attempts = wantSearch ? [true, false] : [false];
+    for (const withSearch of attempts) {
+      const reqBody = withSearch ? { ...base, tools: [{ googleSearch: {} }] } : base;
+      const r = await callGemini(model, reqBody, key, true);
+      if (r && r.ok) { upstream = r; usedModel = model; searchUsed = withSearch; break outer; }
+      lastStatus = r ? r.status : 0;
+      if (lastStatus === 400 && !withSearch) {
+        // A 400 without search usually means a bad file; no point trying other models.
+        let detail = '';
+        try { detail = ((await r.json()).error || {}).message || ''; } catch { /* ignore */ }
+        return json(400, { error: 'Google could not read that request' + (detail ? ': ' + detail.slice(0, 160) : ''), fallback: false });
+      }
+    }
   }
   if (!upstream) {
     const quota = lastStatus === 429;
@@ -218,9 +284,10 @@ export default async function handler(req) {
     });
   }
 
-  // Convert Gemini SSE -> plain text chunks
+  // Convert Gemini SSE -> plain text chunks, then a final \u0000{meta} line with sources.
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
+  const sources = new Map();
   let buf = '';
 
   function emit(line, ctrl) {
@@ -230,8 +297,12 @@ export default async function handler(req) {
     if (!payload || payload === '[DONE]') return;
     try {
       const d = JSON.parse(payload);
-      const text = (d.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('');
-      if (text) ctrl.enqueue(encoder.encode(text));
+      const cand = d.candidates?.[0];
+      const text = (cand?.content?.parts || []).map((p) => (p.thought ? '' : p.text || '')).join('');
+      if (text) ctrl.enqueue(encoder.encode(text.replace(/\u0000/g, '')));
+      for (const ch of cand?.groundingMetadata?.groundingChunks || []) {
+        if (ch.web?.uri && sources.size < 8) sources.set(ch.web.uri, ch.web.title || ch.web.uri);
+      }
     } catch {
       /* ignore partial / non-JSON lines */
     }
@@ -247,6 +318,13 @@ export default async function handler(req) {
       },
       flush(ctrl) {
         if (buf) emit(buf, ctrl);
+        const meta = {
+          model: usedModel,
+          searchUsed,
+          searchUnavailable: wantSearch && !searchUsed,
+          sources: [...sources].map(([uri, title]) => ({ uri, title })),
+        };
+        ctrl.enqueue(encoder.encode('\u0000' + JSON.stringify(meta)));
       },
     })
   );
