@@ -153,32 +153,38 @@ function buildContents(msgs) {
   return contents;
 }
 
-// GET /api/chat  ->  quick health check you can open in a browser.
+// GET /api/chat            -> quick health check you can open in a browser.
+// GET /api/chat?full=1     -> tests every model, with text and with a small image.
+const TEST_JPEG = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAAgACADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDVooor88P0cKKKKACiiigAooooA//Z';
 async function healthCheck(req) {
   const ip = (req.headers.get('x-forwarded-for') || 'unknown').split(',')[0].trim();
   if (isLimited('health:' + ip)) return json(429, { error: 'rate_limited' });
+  const full = new URL(req.url).searchParams.get('full') === '1';
   const key = process.env.GEMINI_API_KEY;
   const out = {
     geminiKeySet: !!key,
     firebaseProjectId: FIREBASE_PROJECT_ID || '(not set: sign-in not enforced)',
     models: [],
   };
+  const probe = async (model, withImage) => {
+    const parts = [{ text: withImage ? 'What colour is this image? One word.' : 'Reply with the single word: ok' }];
+    if (withImage) parts.unshift({ inlineData: { mimeType: 'image/jpeg', data: TEST_JPEG } });
+    const r = await callGemini(model, { contents: [{ role: 'user', parts }], generationConfig: { maxOutputTokens: 10 } }, key, false);
+    let detail = '';
+    if (r && !r.ok) { try { detail = ((await r.json()).error || {}).message || ''; } catch { /* ignore */ } }
+    return { model, test: withImage ? 'image' : 'text', status: r ? r.status : 'unreachable', works: !!(r && r.ok), detail: detail.slice(0, 200) };
+  };
   if (key) {
-    const body = {
-      contents: [{ role: 'user', parts: [{ text: 'Reply with the single word: ok' }] }],
-      generationConfig: { maxOutputTokens: 5 },
-    };
-    for (const model of MODEL_CHAINS.smart) {
-      const r = await callGemini(model, body, key, false);
-      let detail = '';
-      if (r && !r.ok) {
-        try { detail = ((await r.json()).error || {}).message || ''; } catch { /* ignore */ }
-      }
-      out.models.push({ model, status: r ? r.status : 'unreachable', works: !!(r && r.ok), detail: detail.slice(0, 200) });
-      if (r && r.ok) break;
+    const models = full ? uniq([...MODEL_CHAINS.smart, ...MODEL_CHAINS.fast]) : MODEL_CHAINS.smart;
+    for (const model of models) {
+      const res = await probe(model, false);
+      out.models.push(res);
+      if (full) out.models.push(await probe(model, true));
+      else if (res.works) break;
     }
   }
-  out.cloudWorking = out.models.some((m) => m.works);
+  out.cloudWorking = out.models.some((m) => m.works && m.test === 'text');
+  if (full) out.imagesWorking = out.models.some((m) => m.works && m.test === 'image');
   return json(200, out);
 }
 
@@ -265,9 +271,10 @@ export default async function handler(req) {
   // Try each model (with search first if asked) until one answers.
   let upstream = null, usedModel = '', searchUsed = false, lastStatus = 0;
   const started = Date.now();
+  const attempts = [];
   outer: for (const model of chain) {
-    const attempts = wantSearch ? [true, false] : [false];
-    for (const withSearch of attempts) {
+    const searchModes = wantSearch ? [true, false] : [false];
+    for (const withSearch of searchModes) {
       if (Date.now() - started > TIME_BUDGET_MS) break outer;
       const reqBody = withSearch ? { ...base, tools: [{ googleSearch: {} }] } : base;
       let r = await callGemini(model, reqBody, key, true);
@@ -277,6 +284,9 @@ export default async function handler(req) {
       }
       if (r && r.ok) { upstream = r; usedModel = model; searchUsed = withSearch; break outer; }
       lastStatus = r ? r.status : 0;
+      let why = '';
+      if (r && lastStatus !== 400) { try { why = ((await r.clone().json()).error || {}).message || ''; } catch { /* ignore */ } }
+      attempts.push({ model, search: withSearch, status: lastStatus, detail: why.slice(0, 140) });
       if (lastStatus === 400 && !withSearch) {
         // A 400 without search usually means a bad file; no point trying other models.
         let detail = '';
@@ -286,10 +296,15 @@ export default async function handler(req) {
     }
   }
   if (!upstream) {
-    const quota = lastStatus === 429;
+    // Ignore "model not found" answers when choosing what to report.
+    const real = attempts.filter((a) => a.status !== 404).map((a) => a.status);
+    const quota = real.includes(429);
+    const busy = real.some(isBusy);
+    console.log('AURA: all models failed', JSON.stringify(attempts));
     return json(quota ? 429 : 502, {
-      error: quota ? 'quota_exceeded' : isBusy(lastStatus) ? 'google_busy' : 'upstream_error',
-      status: lastStatus,
+      error: quota ? 'quota_exceeded' : busy ? 'google_busy' : 'upstream_error',
+      status: real[real.length - 1] || lastStatus,
+      attempts,
       fallback: true,
     });
   }
