@@ -1140,22 +1140,31 @@ async function askCloud(payload, onText, signal) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let raw = '';
+  const visible = () => { const cut = raw.indexOf('\u0000'); return (cut >= 0 ? raw.slice(0, cut) : raw).replace(/\u0001/g, ''); };
   try {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
       raw += dec.decode(value, { stream: true });
-      const cut = raw.indexOf('\u0000');
-      onText(cut >= 0 ? raw.slice(0, cut) : raw);
+      onText(visible());
     }
   } catch (err) {
-    if (err.name === 'AbortError') { const cut = raw.indexOf('\u0000'); err.partial = cut >= 0 ? raw.slice(0, cut) : raw; }
-    throw err;
+    if (err.name === 'AbortError') { err.partial = visible(); throw err; }
+    if (!visible().trim()) { const e = new Error('network'); e.fallback = true; e.reason = 'the connection to the cloud dropped'; throw e; }
   }
+  const text = visible();
   const cut = raw.indexOf('\u0000');
-  const text = cut >= 0 ? raw.slice(0, cut) : raw;
   let meta = {};
   if (cut >= 0) { try { meta = JSON.parse(raw.slice(cut + 1)); } catch { /* ignore */ } }
+  if (meta.error && !text.trim()) {
+    if (meta.attempts) console.warn('AURA cloud attempts:', meta.attempts);
+    const e = new Error(meta.error);
+    e.fallback = meta.fallback !== false;
+    e.reason = meta.error === 'quota_exceeded' ? 'the free cloud limit was reached'
+      : meta.error === 'google_busy' ? "Google's servers were busy or slow"
+      : 'the cloud was unavailable' + (meta.status ? ` (Google error ${meta.status})` : '');
+    throw e;
+  }
   if (!text.trim()) { const e = new Error('empty'); e.fallback = true; e.reason = 'the cloud returned an empty answer'; throw e; }
   return { text, meta };
 }
