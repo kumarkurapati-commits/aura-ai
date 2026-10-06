@@ -867,7 +867,7 @@ async function addFiles(list) {
       if (file.type.startsWith('image/')) {
         const img = await loadImage(file);
         const full = drawScaled(img, 1600, 0.85);
-        S.pending.push({ id: uid(), name: file.name || 'image.jpg', kind: 'image', mimeType: 'image/jpeg', data: full.split(',')[1], thumb: drawScaled(img, 240, 0.7) });
+        S.pending.push({ id: uid(), name: file.name || 'image.jpg', kind: 'image', mimeType: 'image/jpeg', data: full.split(',')[1], thumb: drawScaled(img, 640, 0.72) });
       } else if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
         if (file.size > MAX_PDF_BYTES) { toast(`"${file.name}" is too large. PDFs can be up to 2.5 MB.`); continue; }
         const url = await fileToDataURL(file);
@@ -1199,12 +1199,21 @@ function makeTitle(text) {
   return t.length > 42 ? t.slice(0, 40).replace(/\s+\S*$/, '') + '…' : (t || 'New chat');
 }
 
+// Image/PDF data to send: the full copy from this session, or the saved preview for images.
+function fileDataFor(f) {
+  if (fileCache.has(f.id)) return fileCache.get(f.id);
+  if (f.kind === 'image' && f.thumb && f.thumb.startsWith('data:image/jpeg;base64,')) {
+    return { mimeType: 'image/jpeg', data: f.thumb.split(',')[1] };
+  }
+  return null;
+}
+
 // Text sent to the AI for a message: its text plus any attached text files.
 function contentForModel(m) {
   let text = m.content || '';
   for (const f of m.files || []) {
     if (f.kind === 'text' && f.text) text += `\n\n[Attached file: ${f.name}]\n\`\`\`\n${f.text}\n\`\`\``;
-    else if ((f.kind === 'image' || f.kind === 'pdf') && !fileCache.has(f.id)) text += `\n\n[The user attached "${f.name}" earlier; it is no longer available.]`;
+    else if ((f.kind === 'image' || f.kind === 'pdf') && !fileDataFor(f)) text += `\n\n[The user attached "${f.name}" earlier; it is no longer available.]`;
   }
   return text;
 }
@@ -1214,7 +1223,7 @@ function buildCloudHistory(c) {
   return c.messages.map((m, i) => {
     const out = { role: m.role, content: contentForModel(m) };
     if (m.role === 'user' && i >= n - FILE_HISTORY) {
-      const files = (m.files || []).filter((f) => fileCache.has(f.id)).map((f) => fileCache.get(f.id));
+      const files = (m.files || []).map(fileDataFor).filter(Boolean);
       if (files.length) out.files = files;
     }
     return out;
