@@ -1,4 +1,4 @@
-# AURA AI — v2
+# AURA AI — v3
 
 Free, public, ChatGPT-style assistant: home page → sign in → chat, with a sidebar of chats, rename, search, and projects.
 
@@ -9,7 +9,9 @@ Free, public, ChatGPT-style assistant: home page → sign in → chat, with a si
 | `app.js` | App logic: sign-in, chats, projects, sidebar, cloud + on-device AI |
 | `firebase-config.js` | **You paste your Firebase config here** |
 | `firestore.rules` | Security rules to paste into Firebase (each user sees only their own chats) |
-| `api/chat.js` | Vercel server function: checks sign-in, calls Gemini |
+| `api/chat.js` | Vercel server function: checks sign-in, calls Gemini (files, search, titles) |
+| `privacy.html`, `terms.html` | Privacy Policy and Terms of Use (replace CONTACT_EMAIL) |
+| `manifest.webmanifest`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | Make AURA installable as a phone/desktop app |
 
 Everything runs on free tiers: Vercel (hosting), Firebase Spark (sign-in + database), Gemini (AI).
 
@@ -30,3 +32,11 @@ While `firebase-config.js` is empty, the app runs in demo mode: sign-in just ask
 
 ## Optional Vercel variables
 `GEMINI_MODEL` (default `gemini-2.5-flash`), `SYSTEM_PROMPT`, `RATE_LIMIT` (default 30 requests per user per 10 min).
+
+## v3 features
+Stop / Regenerate / Edit, copy buttons on code, image + PDF + text-file attachments (drag, paste or 📎),
+web Search with sources, Smart/Fast model, Settings (theme, About you, read aloud, delete all data),
+voice input and read-aloud, AI chat titles, shareable read-only links (`/?s=<id>`), installable app,
+and the cloud is retried on every message.
+
+Attached images/PDFs are kept in memory only (Firebase Storage would need a paid plan); a small preview is saved with the chat.
