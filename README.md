@@ -40,3 +40,9 @@ voice input and read-aloud, AI chat titles, shareable read-only links (`/?s=<id>
 and the cloud is retried on every message.
 
 Attached images/PDFs are kept in memory only (Firebase Storage would need a paid plan); a small preview is saved with the chat.
+
+## Model picker
+The picker next to the message box lists Gemini models, free OpenRouter models (only shown when
+`OPENROUTER_API_KEY` is set in Vercel), and the on-device model, plus a thinking level (Fast/Balanced/Deep).
+Edit the `CATALOG` list at the top of `api/chat.js` to add or remove models. If a chosen model fails,
+AURA falls back to Gemini, then OpenRouter's free router, then on-device.

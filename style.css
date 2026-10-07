@@ -435,3 +435,21 @@ input, textarea { font: inherit; color: inherit; }
 .share-head h1 { font: 700 clamp(24px, 4vw, 32px)/1.2 var(--display); margin: 0 0 4px; letter-spacing: -.01em; }
 .share-head p { margin: 0; color: var(--muted); font-size: 14px; }
 .share-cta { max-width: 780px; margin: 8px auto 48px; padding: 0 20px; text-align: center; }
+
+/* ---------- Model picker ---------- */
+.model-pick { display: inline-flex; align-items: center; gap: 6px; height: 32px; max-width: 46vw; padding: 0 8px 0 10px; border-radius: 10px; border: 0; background: none; color: var(--text); cursor: pointer; font-size: 13.5px; font-weight: 600; white-space: nowrap; }
+.model-pick:hover { background: var(--hover); }
+.model-pick .pm-name { overflow: hidden; text-overflow: ellipsis; }
+.model-pick .pm-effort { color: var(--muted); font-weight: 500; }
+.model-pick .ico { color: var(--muted); }
+.menu.wide { min-width: 300px; max-width: 340px; }
+.menu button.has-desc { align-items: flex-start; padding: 8px 10px; }
+.menu .mtext { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.menu .mtext .mlabel { font-weight: 500; }
+.menu .mdesc { font-size: 12px; color: var(--muted); line-height: 1.35; margin-top: 1px; white-space: normal; }
+.menu button.has-desc .check { margin-top: 2px; }
+@media (max-width: 520px) { .model-pick .pm-effort { display: none; } .search-chip { padding: 0 8px; } }
+.effort-wrap { padding: 2px 10px 8px; }
+.effort-seg { display: flex; width: 100%; }
+.effort-seg button { flex: 1; padding: 6px 8px; }
+.effort-hint { font-size: 12px; color: var(--muted); margin-top: 6px; }

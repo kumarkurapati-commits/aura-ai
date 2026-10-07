@@ -10,7 +10,19 @@ const MAX_FILES = 4;
 const MAX_PDF_BYTES = 2.5 * 1024 * 1024;
 const MAX_TEXT_CHARS = 60000;
 const FILE_HISTORY = 6;                 // only attach file data for the last N messages
-const DEFAULT_SETTINGS = { theme: 'system', model: 'smart', about: '', autoSpeak: false, search: false };
+const DEFAULT_SETTINGS = { theme: 'system', modelId: 'auto', effort: 'balanced', about: '', autoSpeak: false, search: false };
+// Shown until the server's list loads (and if it can't be reached).
+const FALLBACK_MODELS = [
+  { id: 'auto', label: 'Auto', desc: 'Best available model. Switches automatically if one is busy.', provider: 'gemini', vision: true },
+  { id: 'gemini-flash', label: 'Gemini Flash', desc: "Google's main model. Strong all-rounder.", provider: 'gemini', vision: true },
+  { id: 'gemini-lite', label: 'Gemini Flash-Lite', desc: 'Fastest replies and the most free capacity.', provider: 'gemini', vision: true },
+];
+const LOCAL_ENTRY = { id: 'local', label: 'On-device', desc: 'Runs privately in your browser. Smaller model, one-time 0.9 GB download.', provider: 'local', vision: false };
+const EFFORTS = [
+  ['fast', 'Fast', 'Quick answers with little thinking'],
+  ['balanced', 'Balanced', 'Good for most questions'],
+  ['deep', 'Deep', 'Thinks longer for hard problems. Slower'],
+];
 
 // ---- Tiny DOM helpers ----
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -109,6 +121,7 @@ const S = {
   pending: [],            // files attached to the next message
   authMode: 'signin',
   speakingIdx: null,
+  models: FALLBACK_MODELS,
 };
 const fileCache = new Map(); // file id -> { mimeType, data } (kept in memory only)
 const currentChat = () => S.chats.find((c) => c.id === S.currentId) || null;
@@ -309,6 +322,8 @@ async function enterApp(user) {
     S.projects = projects;
     S.chats = chats.map((c) => ({ ...c, messages: c.messages || [] }));
     S.settings = { ...DEFAULT_SETTINGS, ...(settings || {}), search: !!lsGet('aura:search', false) };
+    if (!settings?.modelId && settings?.model === 'fast') S.settings.modelId = 'gemini-lite';
+    delete S.settings.model;
   } catch (e) {
     console.error(e);
     S.projects = []; S.chats = [];
@@ -320,6 +335,8 @@ async function enterApp(user) {
   if (window.innerWidth <= 760) $('#view-app').classList.add('side-closed');
   renderUser();
   renderSearchToggle();
+  renderPicker();
+  loadModels();
   const m = location.hash.match(/^#c\/(.+)$/);
   if (m && S.chats.some((c) => c.id === m[1])) openChat(m[1], false);
   else newChat(null);
@@ -421,16 +438,20 @@ function renderUser() {
 
 // ================= MENUS =================
 let menuAnchorRow = null;
-function openMenu(anchor, items) {
+function openMenu(anchor, items, wide = false) {
   closeMenu();
   const m = $('#menu');
+  m.classList.toggle('wide', wide);
   m.replaceChildren();
   for (const it of items) {
     if (!it) continue;
     if (it === '-') { m.append(h('hr')); continue; }
     if (it.header) { m.append(h('div', { class: 'mhead', text: it.header })); continue; }
-    m.append(h('button', { class: it.danger ? 'danger' : '', role: 'menuitem', onclick: () => { closeMenu(); it.onClick(); } },
-      it.icon ? svg(it.icon) : null, h('span', { class: 'mlabel', text: it.label }), it.checked ? h('span', { class: 'check', text: '✓' }) : null));
+    if (it.node) { m.append(it.node); continue; }
+    m.append(h('button', { class: (it.danger ? 'danger' : '') + (it.desc ? ' has-desc' : ''), role: 'menuitem', onclick: () => { closeMenu(); it.onClick(); } },
+      it.icon ? svg(it.icon) : null,
+      it.desc ? h('span', { class: 'mtext' }, h('span', { class: 'mlabel', text: it.label }), h('span', { class: 'mdesc', text: it.desc })) : h('span', { class: 'mlabel', text: it.label }),
+      it.checked ? h('span', { class: 'check', text: '✓' }) : null));
   }
   m.hidden = false;
   const r = anchor.getBoundingClientRect();
@@ -449,7 +470,7 @@ function closeMenu() {
   menuAnchorRow?.classList.remove('menu-open');
   menuAnchorRow = null;
 }
-document.addEventListener('mousedown', (e) => { if (!$('#menu').hidden && !e.target.closest('#menu') && !e.target.closest('.more') && !e.target.closest('.user-btn')) closeMenu(); });
+document.addEventListener('mousedown', (e) => { if (!$('#menu').hidden && !e.target.closest('#menu') && !e.target.closest('.more') && !e.target.closest('.user-btn') && !e.target.closest('#btn-model')) closeMenu(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
 window.addEventListener('resize', closeMenu);
 
@@ -774,8 +795,7 @@ function openSettings() {
       seg([['system', 'System'], ['light', 'Light'], ['dark', 'Dark']], draft.theme, (v) => { draft.theme = v; applyTheme(v); })),
     h('div', { class: 'set-group' },
       h('div', { class: 'set-label', text: 'Model' }),
-      h('p', { class: 'set-help', text: 'Smart gives better answers. Fast replies quicker and has more free capacity.' }),
-      seg([['smart', 'Smart'], ['fast', 'Fast']], draft.model, (v) => { draft.model = v; })),
+      h('p', { class: 'set-help', style: 'margin:0', text: 'Choose the AI model and thinking level from the picker next to the message box. Your choice is remembered.' })),
     h('div', { class: 'set-group' },
       h('div', { class: 'set-label', text: 'About you' }),
       h('p', { class: 'set-help', text: 'AURA keeps this in mind in every chat. Don\'t include anything sensitive.' }),
@@ -946,7 +966,11 @@ function messageEl(m, idx, chat, opts = {}) {
   }
   if (!streaming && !m.error) {
     const meta = [];
-    if (m.via === 'local') meta.push(m.note || 'Answered on-device (smaller model)');
+    if (m.via === 'local') meta.push('On-device' + (m.note ? ' · ' + m.note : ''));
+    else {
+      if (m.modelLabel) meta.push(m.modelLabel + (m.effort ? ' · ' + effortLabel(m.effort) : ''));
+      if (m.note) meta.push(m.note);
+    }
     if (m.stopped) meta.push('Stopped');
     if (meta.length) wrap.append(h('div', { class: 'msg-meta', text: meta.join(' · ') }));
     if (!readOnly) {
@@ -1066,6 +1090,62 @@ function renderSearchToggle() {
   const b = $('#btn-search');
   b.classList.toggle('on', !!S.settings.search);
   b.setAttribute('aria-pressed', String(!!S.settings.search));
+}
+
+// ================= MODEL PICKER =================
+async function loadModels() {
+  try {
+    const res = await fetch('/api/chat?models=1');
+    if (!res.ok) throw new Error('models');
+    const d = await res.json();
+    if (Array.isArray(d.models) && d.models.length) S.models = d.models;
+  } catch { /* keep the fallback list */ }
+  if (!allModels().some((m) => m.id === S.settings.modelId)) S.settings.modelId = 'auto';
+  renderPicker();
+}
+const allModels = () => [...S.models, LOCAL_ENTRY];
+const currentModel = () => allModels().find((m) => m.id === S.settings.modelId) || S.models[0];
+const effortLabel = (id) => (EFFORTS.find((e) => e[0] === id) || EFFORTS[1])[1];
+
+function renderPicker() {
+  const m = currentModel();
+  const b = $('#btn-model');
+  b.replaceChildren(
+    h('span', { class: 'pm-name', text: m.label }),
+    m.id === 'local' ? null : h('span', { class: 'pm-effort', text: effortLabel(S.settings.effort) }),
+    h('span', { class: 'ico', html: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg>' }));
+  b.title = 'Model: ' + m.label + (m.id === 'local' ? '' : ' · Thinking: ' + effortLabel(S.settings.effort));
+}
+
+function saveChoice() {
+  renderPicker();
+  if (S.store) { const { search, ...toSave } = S.settings; persist('saveSettings', toSave); }
+}
+
+function pickerMenu(anchor) {
+  const groups = [
+    ['Google Gemini', S.models.filter((m) => m.provider === 'gemini')],
+    ['Other free models', S.models.filter((m) => m.provider === 'openrouter')],
+    ['Private', [LOCAL_ENTRY]],
+  ];
+  const items = [];
+  if (S.settings.modelId !== 'local') {
+    const hint = h('div', { class: 'effort-hint', text: (EFFORTS.find((e) => e[0] === S.settings.effort) || EFFORTS[1])[2] });
+    const row = seg(EFFORTS.map(([id, label]) => [id, label]), S.settings.effort, (v) => {
+      S.settings.effort = v; saveChoice();
+      hint.textContent = EFFORTS.find((e) => e[0] === v)[2];
+    });
+    row.classList.add('effort-seg');
+    items.push({ header: 'Thinking' }, { node: h('div', { class: 'effort-wrap' }, row, hint) }, '-');
+  }
+  for (const [title, list] of groups) {
+    if (!list.length) continue;
+    items.push({ header: title });
+    for (const m of list) {
+      items.push({ label: m.label + (m.vision ? '' : ''), desc: m.desc, checked: S.settings.modelId === m.id, onClick: () => { S.settings.modelId = m.id; saveChoice(); } });
+    }
+  }
+  openMenu(anchor, items, true);
 }
 
 // ================= VOICE =================
@@ -1277,17 +1357,22 @@ async function runAssistant(c) {
   const instructions = project?.instructions || '';
   let reply = null;
   try {
-    // 1) Always try the cloud first.
+    // 1) Cloud first, unless the person picked the on-device model.
     try {
+      if (S.settings.modelId === 'local') { const e = new Error('local'); e.fallback = true; e.chosenLocal = true; throw e; }
       setMode('cloud');
       const { text, meta } = await askCloud({
         messages: buildCloudHistory(c),
         instructions,
         about: S.settings.about || '',
-        model: S.settings.model,
+        modelId: S.settings.modelId,
+        effort: S.settings.effort,
         search: !!S.settings.search,
       }, updateStreaming, signal);
       reply = { role: 'assistant', content: text, via: 'cloud' };
+      if (meta.modelLabel) reply.modelLabel = meta.modelLabel;
+      if (meta.effort && meta.effort !== 'balanced') reply.effort = meta.effort;
+      if (meta.note) reply.note = meta.note;
       if (meta.sources?.length) reply.sources = meta.sources;
       if (meta.searchUnavailable) toast('Web search wasn\'t available for this answer.');
     } catch (err) {
@@ -1297,9 +1382,11 @@ async function runAssistant(c) {
       updateStreaming('');
       setMode('local');
       const hadFiles = c.messages[c.messages.length - 1].files?.some((f) => f.kind !== 'text');
-      const note = `Answered on-device because ${err.reason || 'the cloud was unavailable'}`
-        + (hadFiles ? ". The on-device model can't see images or PDFs" : '')
-        + '. Press Regenerate to try the cloud again.';
+      const note = err.chosenLocal
+        ? (hadFiles ? "The on-device model can't see images or PDFs." : '')
+        : `Answered on-device because ${err.reason || 'the cloud was unavailable'}`
+          + (hadFiles ? ". The on-device model can't see images or PDFs" : '')
+          + '. Press Regenerate to try the cloud again.';
       const system = BASE_PROMPT
         + (S.settings.about ? '\n\nAbout the user:\n' + S.settings.about : '')
         + (instructions ? '\n\nFollow these project instructions from the user:\n' + instructions : '');
@@ -1375,6 +1462,7 @@ function wireApp() {
     toast(S.settings.search ? 'Web search on: AURA will look up current information.' : 'Web search off');
   });
   $('#btn-share').addEventListener('click', () => S.currentId && shareChat(S.currentId));
+  $('#btn-model').addEventListener('click', (e) => pickerMenu(e.currentTarget));
   $('#btn-new-chat').addEventListener('click', () => newChat(null));
   $('#btn-new-project').addEventListener('click', () => createProject());
   $('#in-search').addEventListener('input', (e) => { S.search = e.target.value.trim(); renderSidebar(); });
