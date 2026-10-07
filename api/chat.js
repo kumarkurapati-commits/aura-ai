@@ -19,7 +19,7 @@ const MODEL_CHAINS = {
   smart: uniq([process.env.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-3.5-flash-lite']),
   fast: uniq([process.env.GEMINI_FAST_MODEL, 'gemini-flash-lite-latest', 'gemini-3.5-flash-lite', 'gemini-flash-latest']),
 };
-const TIME_BUDGET_MS = 75000; // stop trying more models after this long
+const TIME_BUDGET_MS = 60000; // stop trying more models after this long
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const isBusy = (status) => status === 503 || status === 500 || status === 504;
 
@@ -118,16 +118,35 @@ function json(status, body) {
   });
 }
 
-function callGemini(model, body, key, stream, timeoutMs = 30000) {
+// The timeout only covers waiting for Google to START answering; a long answer can keep streaming.
+async function callGemini(model, body, key, stream, startTimeoutMs = 30000) {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/${model}` +
     (stream ? ':streamGenerateContent?alt=sse' : ':generateContent');
-  return fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  }).catch(() => null);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), startTimeoutMs);
+  try {
+    return await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch {
+    return null; // timed out or unreachable
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Models that just failed (busy / timed out) are tried last for a couple of minutes.
+const coolDown = new Map();
+const COOL_DOWN_MS = 2 * 60 * 1000;
+function orderByHealth(chain) {
+  const now = Date.now();
+  const ok = chain.filter((m) => !(coolDown.get(m) > now));
+  const cooling = chain.filter((m) => coolDown.get(m) > now);
+  return [...ok, ...cooling];
 }
 
 // Turn the browser's message list into Gemini "contents".
@@ -292,18 +311,19 @@ export default async function handler(req) {
       let upstream = null, usedModel = '', searchUsed = false;
       const started = Date.now();
       const attempts = [];
-      outer: for (const model of chain) {
+      outer: for (const model of orderByHealth(chain)) {
         const searchModes = wantSearch ? [true, false] : [false];
         for (const withSearch of searchModes) {
           if (Date.now() - started > TIME_BUDGET_MS) break outer;
           const reqBody = withSearch ? { ...base, tools: [{ googleSearch: {} }] } : base;
-          let r = await callGemini(model, reqBody, key, true, 45000);
-          if (r && !r.ok && isBusy(r.status) && Date.now() - started < TIME_BUDGET_MS - 5000) {
-            await sleep(1200); // Google is briefly overloaded: one quick retry before moving on
-            r = await callGemini(model, reqBody, key, true, 45000);
+          let r = await callGemini(model, reqBody, key, true, 12000);
+          if (r && !r.ok && isBusy(r.status) && !(coolDown.get(model) > Date.now())) {
+            await sleep(800); // Google is briefly overloaded: one quick retry before moving on
+            r = await callGemini(model, reqBody, key, true, 12000);
           }
-          if (r && r.ok) { upstream = r; usedModel = model; searchUsed = withSearch; break outer; }
+          if (r && r.ok) { upstream = r; usedModel = model; searchUsed = withSearch; coolDown.delete(model); break outer; }
           const status = r ? r.status : 'timeout';
+          if (status === 'timeout' || isBusy(status) || status === 429) coolDown.set(model, Date.now() + COOL_DOWN_MS);
           let detail = '';
           if (r) { try { detail = ((await r.json()).error || {}).message || ''; } catch { /* ignore */ } }
           attempts.push({ model, search: withSearch, status, detail: detail.slice(0, 160) });
