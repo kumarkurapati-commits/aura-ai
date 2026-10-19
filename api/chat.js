@@ -12,7 +12,10 @@ export const config = { runtime: 'edge' };
 const SYSTEM_PROMPT =
   process.env.SYSTEM_PROMPT ||
   'You are AURA AI, a helpful, friendly and concise assistant. Use Markdown for structure when it helps (lists, tables, code blocks).';
-const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || '';
+// One or more Firebase project IDs, comma-separated. During the KURA's switchover set
+// "scriptly-cc6a8,aura-ai-c090d" so both old and new sign-ins work; afterwards just "scriptly-cc6a8".
+const FIREBASE_PROJECT_IDS = (process.env.FIREBASE_PROJECT_ID || '').split(',').map((s) => s.trim()).filter(Boolean);
+const FIREBASE_PROJECT_ID = FIREBASE_PROJECT_IDS.join(',');
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || '';
 
 const uniq = (a) => a.filter((m, i) => m && a.indexOf(m) === i);
@@ -322,7 +325,7 @@ async function makeTitle(msgs, key) {
 }
 
 // ---------- Handler ----------
-export default async function handler(req) {
+async function handleChat(req) {
   if (req.method === 'GET') {
     return new URL(req.url).searchParams.get('models') === '1' ? modelList() : healthCheck(req);
   }
@@ -333,7 +336,10 @@ export default async function handler(req) {
     const auth = req.headers.get('authorization') || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
     let claims = null;
-    try { claims = await verifyFirebaseToken(token, FIREBASE_PROJECT_ID); } catch { claims = null; }
+    for (const pid of FIREBASE_PROJECT_IDS) {
+      try { claims = await verifyFirebaseToken(token, pid); } catch { claims = null; }
+      if (claims) break;
+    }
     if (!claims) return json(401, { error: 'Please sign in again', fallback: false });
     callerId = 'u:' + claims.sub;
   }
@@ -503,4 +509,31 @@ export default async function handler(req) {
 function labelFor(name) {
   const spec = CATALOG.find((m) => m.id !== 'auto' && (m.models || []).includes(name));
   return spec ? spec.label : name;
+}
+
+
+// ---------- Cross-origin access (KURA's) ----------
+// AURA's pages now live at https://scriptlyfilm.com/aura/ and call this function from there.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
+  'https://scriptlyfilm.com,https://www.scriptlyfilm.com,https://scriptly-cc6a8.web.app,https://scriptly-cc6a8.firebaseapp.com,http://localhost:5000,http://localhost:5173')
+  .split(',').map((o) => o.trim()).filter(Boolean);
+
+function corsHeaders(req) {
+  const origin = req.headers.get('origin') || '';
+  const h = { 'Vary': 'Origin' };
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    h['Access-Control-Allow-Origin'] = origin;
+    h['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS';
+    h['Access-Control-Allow-Headers'] = 'authorization, content-type';
+    h['Access-Control-Max-Age'] = '86400';
+  }
+  return h;
+}
+
+export default async function handler(req) {
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(req) });
+  const res = await handleChat(req);
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(corsHeaders(req))) headers.set(k, v);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
